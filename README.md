@@ -1,70 +1,51 @@
-# CUDA kernels lab: tiled matrix multiplication and transpose
+# CUDA kernels lab
 
-Two CUDA kernels written in Python with Numba for the "Calcul GPU" module at
-CY Tech (ING3, AI major, 2025-2026, individual lab work). Both use shared-memory
-tiles, are checked against a NumPy reference and were timed on the Tesla T4 of
-a Google Colab session. Each kernel exists as a notebook with the recorded
-outputs and as a plain script with the same code.
+Two CUDA kernels in Python with Numba: a tiled matrix multiplication and a shared-memory transpose, checked against NumPy and timed on a Tesla T4. Each comes as a script and as a notebook with recorded outputs.
 
-    matmul.ipynb / matmul.py        1024 x 1024 int32 product, 16 x 16 tiles
-    transpose.ipynb / transpose.py  6144 x 8192 int32 transpose, 32 x 32 tiles
-    docs/                           course slides, Programmation GPU 2025-2026 (course material)
+## What it does
 
-## Matrix multiplication
+- Multiplies two 1024 x 1024 int32 matrices with 16 x 16 tiles, reading each element once per tile, not sixteen times.
+- Transposes a 6144 x 8192 int32 matrix through a padded 32 x 33 tile, with coalesced reads and writes.
+- Accepts sizes that are not multiples of the tile: out-of-range threads write zeros.
+- Checks both outputs exactly against NumPy; the inputs are small integers, so the int32 sums cannot overflow.
 
-`tiled_product_kernel` computes C = A x B with one thread per output element,
-in blocks of 16 x 16 threads. Each block walks along the K dimension in steps
-of 16: it copies a 16 x 16 tile of A and one of B into shared memory,
-synchronises, does the sixteen multiply-adds from shared memory, synchronises
-again and moves on. Each element of A and B is thus read from global memory
-once per tile instead of sixteen times, and the reads of B are contiguous.
-Out-of-range threads write zeros into their tile slot, so the sizes need not
-be multiples of 16. The inputs are small integers built with modular
-arithmetic (`(5i + 11) mod 23` and `(7i + 13) mod 19`), so the int32
-accumulation cannot overflow and the result is compared exactly with `A @ B`
-in NumPy.
+## How it works
 
-## Transpose
+```
+matmul.py     16 x 16 block, one thread per output -> per K tile: A and B tiles to shared memory
+              -> sync -> 16 multiply-adds -> sync -> next tile
+transpose.py  32 x 8 block, four rows per thread -> read 32 x 32 tile row-wise -> 32 x 33 shared tile
+              -> write transposed rows
+```
 
-`shared_transpose_kernel` moves a 32 x 32 tile through shared memory so that
-both the global reads and writes are coalesced: a warp reads 32 consecutive
-elements of an input row and later writes 32 consecutive elements of an
-output row instead of a strided column. The tile is declared 32 x 33: the
-padding column shifts each row by one bank, so reading it column-wise does
-not cause 32-way bank conflicts. Blocks are 32 x 8 threads and each thread
-handles four rows of the tile, as in NVIDIA's transpose sample.
+The padding column shifts each row by one bank, so column-wise reads cause no 32-way bank conflicts, as in NVIDIA's transpose sample.
 
-## Measured times
+## Results
 
-One kernel launch, measured with CUDA events after a warm-up launch, on a
-Tesla T4 (compute capability 7.5), as recorded in the notebooks.
+One launch on a Colab Tesla T4 (compute capability 7.5), timed with CUDA events after a warm-up.
 
-| kernel                      | size                        | kernel time | whole call |
-|-----------------------------|-----------------------------|-------------|------------|
-| tiled matrix multiplication | 1024 x 1024 x 1024          | 6.03 ms     | 6.11 ms    |
-| shared-memory transpose     | 6144 x 8192 -> 8192 x 6144  | 2.39 ms     | 2.48 ms    |
+| kernel | size | kernel time | whole call |
+|---|---|---|---|
+| tiled matrix multiplication | 1024 x 1024 x 1024 | 6.03 ms | 6.11 ms |
+| shared-memory transpose | 6144 x 8192 -> 8192 x 6144 | 2.39 ms | 2.48 ms |
 
-Both outputs match the NumPy reference exactly (`Validation: OK`). For scale:
-the product is 2 x 1024^3 = 2.15 x 10^9 operations, so 6.03 ms is about
-356 GOP/s in int32; the transpose reads and writes 201 MB each way, so 2.39 ms
-is about 168 GB/s of effective bandwidth.
+Both outputs match NumPy exactly. The product is 2 x 1024^3 = 2.15 x 10^9 operations, about 356 GOP/s in int32. The transpose moves 201 MB each way, about 168 GB/s. Each time is a single launch, not a median.
 
-## Running it
+## Run it
 
-    pip install -r requirements.txt
-    python matmul.py
-    python transpose.py
+A CUDA GPU and a Numba CUDA setup: NVIDIA driver and CUDA toolkit, or the `numba-cuda` package.
 
-The scripts need a CUDA GPU and a Numba CUDA setup (NVIDIA driver and CUDA
-toolkit, or the `numba-cuda` package); they print the device name and the
-kernel time. Without a GPU, `cuda.is_available()` is False and they fall back
-to NumPy. The timings above come from Colab (Runtime > Change runtime type > T4 GPU).
+```bash
+pip install -r requirements.txt
+python matmul.py            # device name, kernel time, Validation: OK
+python transpose.py
+```
+
+Without a GPU, `cuda.is_available()` is False and the scripts fall back to NumPy. The timings above come from Colab.
 
 ## Limitations
 
-- No naive global-memory version of either kernel is kept, so the table gives
-  absolute times, not a speedup.
-- Each time is a single launch, not a median over several launches.
-- 16 x 16 tiles with one output per thread leave the T4 well below its peak;
-  larger tiles, several outputs per thread, a plain copy kernel as bandwidth
-  ceiling and a float32 comparison against cuBLAS (CuPy) are the next steps.
+- No naive global-memory version is kept, so the table gives absolute times, not a speedup.
+- 16 x 16 tiles with one output per thread leave the T4 well below its peak. Next: larger tiles, more outputs per thread, a copy kernel as bandwidth ceiling, float32 against cuBLAS (CuPy).
+
+Individual lab work for the Calcul GPU module at CY Tech (ING3, AI major, 2025-2026); the course slides are in `docs/`. I wrote the kernels, checks and timing code.
